@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+secrets/
+service-account*.json
+
+# Database
+*.sqlite
+*.sqlite3
+pgdata/
+docker-volumes/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pids/
+*.pid
+
+# Uploads — user photos must never reach the repo
+uploads/
+tmp/
+storage/local/
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.swp
