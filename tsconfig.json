@@ -2,7 +2,9 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2023",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "declaration": true,
     "removeComments": false,
     "emitDecoratorMetadata": true,
@@ -20,8 +22,16 @@
     "strictBindCallApply": true,
     "resolveJsonModule": true,
     "allowJs": true,
-    "checkJs": false
+    "checkJs": false,
+    "rootDir": "./src"
   },
-  "include": ["src/**/*", "packages/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "packages",
+    "test"
+  ]
 }

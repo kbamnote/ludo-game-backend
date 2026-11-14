@@ -18,8 +18,21 @@ async function bootstrap() {
   app.enableCors({ origin: true });
 
   const port = Number(process.env.PORT ?? 3000);
-  await app.listen(port);
-  Logger.log(`ludo-server listening on http://localhost:${port}`, 'Bootstrap');
+
+  // Bind to 0.0.0.0, not the default loopback. A container platform routes
+  // traffic in from outside the container, so a process listening only on
+  // localhost accepts nothing and the deploy is marked unhealthy.
+  await app.listen(port, '0.0.0.0');
+
+  Logger.log(`ludo-server listening on 0.0.0.0:${port}`, 'Bootstrap');
+
+  if (process.env.LUDO_SIGNING_KEY === undefined || process.env.LUDO_SIGNING_KEY === 'dev-only-insecure-key') {
+    Logger.warn(
+      'LUDO_SIGNING_KEY is unset or still the development default. ' +
+        'Media URLs signed with it are forgeable. Generate one with: openssl rand -hex 32',
+      'Bootstrap',
+    );
+  }
 }
 
 void bootstrap();
