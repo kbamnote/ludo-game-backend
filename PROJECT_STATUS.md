@@ -1,6 +1,6 @@
 # LUDO AFTER DARK (Server) — Project Status
 
-**Phase:** 0 — Project Audit (complete). Backend implementation begins at **Phase 3**.
+**Phase:** 3 — Avatar system (backend complete, awaiting Phase 4)
 **Audit date:** 2026-11-13
 **Repository:** `ludo-server` — `D:\Print World\ludo-game\ludo-server`
 **Sibling repository:** `ludo-mobile` — see `../ludo-mobile/PROJECT_STATUS.md`
@@ -186,6 +186,60 @@ Postgres + Redis
 | S9 | Chat and usernames are an abuse surface for a 16–28 audience | Medium | Moderation module from Phase 6: filtering, rate limits, report queue, blocks, bans |
 | S10 | Real-money framing in the design ("entry fee", "winner takes", "$19.99") vs. "wager tier strictly simulated" | Medium | **Needs a product/legal ruling before Phase 7.** Real-money wagering materially changes store-listing and jurisdiction requirements. |
 | S11 | No remote configured; work is local-only | Low | Create the remote before Phase 3 |
+
+---
+
+## 9. Phase 3 result — avatars
+
+**Status: complete.** NestJS is bootstrapped and the whole avatar pipeline runs
+end to end: upload slot → consent → generation job → stored avatar → equip → delete.
+
+| Check | Result |
+|---|---|
+| `npx jest` | ✅ **23/23 pass** |
+| `npx nest build` | ✅ clean |
+| Live smoke test | ✅ PUT 204 → job succeeded → source photo auto-deleted → avatar stored |
+
+### The provider is swappable, as required
+
+`services/avatar-provider/provider.interface.ts` is the only thing the rest of the
+server knows about. No vendor type, SDK or error escapes that folder. Changing
+provider is **one new file plus one line** in `avatars.module.ts`.
+
+`StubAvatarProvider` ships as the default because which AI provider to use is still
+open (§8). Blocking the whole feature on that decision would have been the wrong
+trade — with the stub, consent, uploads, the job queue, polling, storage, equip and
+delete are all real and tested today.
+
+### Privacy obligations, enforced not promised
+
+| Requirement | How |
+|---|---|
+| Explicit consent | Recorded with timestamp + policy version on the job. A request without it is **400**, and a stale policy version is rejected. |
+| Source photo deleted | Destroyed **before** the job reports terminal, so a client can never see "done" while the photo still exists. |
+| Private by default | New avatars are `visibility: 'private'`. Opt-in only. |
+| Deletion is real | Hard delete of row **and** object. `DELETE /v1/avatars` wipes everything for a user. |
+| No key in the client | The client has no provider URL, key or model name. It talks only to this server. |
+| No internals leak | Provider errors are normalised to `AvatarProviderError`; raw messages stay in logs. |
+
+### Three bugs the tests and smoke run caught
+
+1. **Terminal-before-cleanup.** The job was marked `succeeded`/`failed` and *then*
+   the source photo deleted, leaving a window where a polling client sees "done"
+   while the photo is still on disk. Reordered so the guarantee actually holds.
+2. **Upload URL pointed at the wrong route** — the media `GET` instead of the
+   upload `PUT`. The client would have uploaded nowhere.
+3. **Path-traversal guard rejected every legitimate key on Windows.** It compared
+   a raw root against a `join`ed path, so `/tmp/x` never matched `\tmp\x`. The unit
+   tests missed it because `mkdtemp` returns a native path; the smoke test found it.
+
+### Deliberately deferred
+
+- **Auth** — `x-user-id` stands in for a verified JWT subject, isolated to one
+  helper and hard-refused when `NODE_ENV=production`.
+- **Persistence** — in-memory maps. Every method is already shaped for a repository
+  swap; designing the schema around one feature would be premature.
+- **Real object storage** — local-disk adapter behind the S3-shaped interface.
 
 ---
 
