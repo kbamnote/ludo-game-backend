@@ -257,3 +257,78 @@ delete are all real and tested today.
 6. **Avatar AI provider** — any preference, or budget/latency constraints I should design to?
 7. **Wagering** (S10) — purely virtual currency, or is real money in scope?
 8. **Git remote** — host and repo name.
+
+---
+
+## 10. Phase 5 result — real-time multiplayer
+
+Server-authoritative multiplayer is implemented and verified end to end: two
+signed-in clients join one room, ready up, and play turns the server decides.
+
+### What landed
+
+| Piece | File | Note |
+|---|---|---|
+| Guest auth | `src/modules/auth/*` | `POST /v1/auth/guest` mints a 30-day JWT from a device id; `JwtGuard` protects every avatar route. This replaces the `x-user-id` stand-in that made the deployed avatar routes answer 401. |
+| Room state | `src/realtime/schema/LudoState.ts` | Tokens, players, turn, roll, turn phase, ranking, pot. No RNG seed — verified by test. |
+| The game | `src/realtime/rooms/LudoRoom.ts` | Server rolls and validates; clients send intentions only. Turn timer, bot fill, drop/reconnect. |
+| Colyseus bootstrap | `src/realtime/realtime.ts` | Shares Nest's HTTP server, so one port serves REST and WebSocket. |
+| Matchmaking over HTTP | `src/modules/matches/matchmake.controller.ts` | Nest serves `/matchmake/*`. See below — without it, nothing could join. |
+| Engine dependency | `src/realtime/engine.ts` | One module names the engine path; everything else imports from it. |
+
+### Four problems worth recording
+
+1. **Matchmaking returned 404 for every request.** A Colyseus client POSTs to
+   `/matchmake/joinOrCreate/<room>` *before* opening a socket. Colyseus serves
+   those routes from its own listener, but this deployment shares Nest's single
+   HTTP server and `WebSocketTransport` attached to an existing server handles
+   only the `upgrade` event. Express answered everything else. Fixed by serving
+   them in Nest through `matchMaker.controller.invokeMethod`, the API Colyseus
+   publishes for exactly this.
+
+2. **State never synced, silently.** `@colyseus/schema` 5's `@type` decorators
+   are *standard* (stage-3) decorators recording field types under
+   `Symbol.metadata`. NestJS requires *legacy* decorators for its DI, and the
+   two cannot be enabled in one compilation. Compiled as legacy, `@type`
+   records nothing and the encoder throws
+   `Cannot read properties of undefined (reading 'Symbol(Symbol.metadata)')`
+   on every patch — clients join successfully and no state ever arrives. Fixed
+   with `defineTypes`, the decorator-free API, plus
+   `useDefineForClassFields: false` so field initializers do not shadow the
+   accessors it installs.
+
+3. **`CloseCode.CONSENTED` is 4000, not 1000.** The first implementation read
+   the close code in `onLeave` to tell a deliberate leave from a dropped
+   connection, and had it backwards. Colyseus 0.18 separates the two: `onDrop`
+   for a lost connection (where `allowReconnection` belongs) and `onLeave` for
+   a deliberate one. Now split accordingly, with the bot takeover in `onLeave`
+   only, so it happens exactly once after a failed reconnection.
+
+4. **`fillWithBots` was declared and never implemented.** Two players got a
+   two-handed game on a board drawn for four, with two empty houses — while the
+   lobby screen promises "auto-fill active". `addBots()` now fills every empty
+   seat at start, and a lone ready player waits `LOBBY_FILL_SECONDS` (15) for a
+   human before starting against CPUs rather than waiting forever.
+
+### Verified
+
+Against the compiled build (`dist/src/main.js`, as production runs it):
+
+- `/health`, `/`, `/v1/avatars/styles` → 200; guest sign-in → 201
+- `joinOrCreate` → 200 with a seat reservation; no token → 523 `AUTH_FAILED`;
+  an unexposed matchmaker method → 404
+- Two clients in one room; distinct seats; room code assigned
+- No `seed`/`rng` field in synced state
+- Match starts when all are ready; turn clock set; empty seats become CPUs
+- A roll from the wrong seat is ignored; the server's die is 1–6
+- A legal move applies and is narrated; a forged token id changes nothing
+- A deliberate leave hands the seat to a bot
+
+### Still deferred
+
+- **Persistence** — still in-memory. Restarting the server loses users,
+  avatars and matches, though issued JWTs keep verifying.
+- **Horizontal scale** — one Colyseus process, no Redis presence/driver.
+- **Wagering** — the pot is displayed and counted; no balance is debited.
+- **Server lint** — `npm run lint` has no eslint config in this repo and has
+  never run. Pre-existing.

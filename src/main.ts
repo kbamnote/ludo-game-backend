@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { json, raw } from 'express';
 import { AppModule } from './app.module';
+import { AuthService } from './modules/auth/auth.service';
+import { attachRealtime } from './realtime/realtime';
 
 async function bootstrap() {
   // rawBody lets the upload route read the photo bytes directly.
@@ -24,12 +26,32 @@ async function bootstrap() {
   // localhost accepts nothing and the deploy is marked unhealthy.
   await app.listen(port, '0.0.0.0');
 
+  // Colyseus shares Nest's HTTP server rather than opening a second port, so
+  // the WebSocket endpoint sits at the same origin as the REST API. Most
+  // hosts expose exactly one port, which makes this the only option that
+  // works in production.
+  attachRealtime(app.getHttpServer(), app.get(AuthService));
+
   Logger.log(`ludo-server listening on 0.0.0.0:${port}`, 'Bootstrap');
 
-  if (process.env.LUDO_SIGNING_KEY === undefined || process.env.LUDO_SIGNING_KEY === 'dev-only-insecure-key') {
+  warnOnInsecureDefault('LUDO_SIGNING_KEY', 'dev-only-insecure-key', 'media URLs are forgeable');
+  warnOnInsecureDefault(
+    'LUDO_JWT_SECRET',
+    'dev-only-insecure-jwt-secret',
+    'anyone can mint a valid session token',
+  );
+}
+
+/**
+ * A development default left in a deployed environment is a security hole, not
+ * a style issue. Say so loudly at boot rather than leaving it to be noticed.
+ */
+function warnOnInsecureDefault(name: string, devValue: string, consequence: string) {
+  const value = process.env[name];
+  if (value === undefined || value === devValue) {
     Logger.warn(
-      'LUDO_SIGNING_KEY is unset or still the development default. ' +
-        'Media URLs signed with it are forgeable. Generate one with: openssl rand -hex 32',
+      `${name} is unset or still the development default — ${consequence}. ` +
+        `Generate one with: openssl rand -hex 32`,
       'Bootstrap',
     );
   }

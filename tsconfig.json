@@ -2,13 +2,21 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2023",
-    "lib": [
-      "ES2023"
-    ],
-    "declaration": true,
+    "lib": ["ES2023"],
+    // The server is an application, not a library: nothing imports its .d.ts.
+    // Leaving declaration emit on would also make tsc try to infer public types
+    // for the plain-JS engine files below, which fails on inference it cannot
+    // name (TS9xxx) for no benefit.
+    "declaration": false,
     "removeComments": false,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
+    // Required, not stylistic. Colyseus schema classes declare fields with
+    // initializers, and `defineTypes` installs accessors on the prototype to
+    // track changes. With define semantics each initializer would create an
+    // own property that shadows those accessors, so state would stop syncing
+    // — silently, with no error anywhere.
+    "useDefineForClassFields": false,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "sourceMap": true,
@@ -21,17 +29,18 @@
     "noImplicitAny": true,
     "strictBindCallApply": true,
     "resolveJsonModule": true,
+    // The Ludo engine is plain ESM JavaScript. Compiling it here, rather than
+    // consuming it as an installed package, is deliberate: a `file:` dependency
+    // would resolve to ESM that this CommonJS build cannot require(), and tsc
+    // follows symlinks back out of rootDir anyway.
     "allowJs": true,
     "checkJs": false,
-    "rootDir": "./src"
+    // rootDir is the project root, not ./src, because the compilation now spans
+    // two source trees. Output therefore mirrors them: dist/src/... and
+    // dist/packages/engine/src/..., which keeps every relative import between
+    // them valid after compilation. The `start` script points at dist/src.
+    "rootDir": "./"
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "packages",
-    "test"
-  ]
+  "include": ["src/**/*", "packages/engine/src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "packages/engine/test"]
 }
