@@ -1,0 +1,17 @@
+{
+  "name": "@ludo/engine",
+  "version": "0.1.0",
+  "description": "Deterministic Ludo rules engine. Shared by ludo-server and ludo-mobile.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./board": "./src/board.js"
+  },
+  "files": ["src"],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
