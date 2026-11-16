@@ -86,6 +86,34 @@ export class AuthService {
     };
   }
 
+  /**
+   * Forgets a user entirely.
+   *
+   * Deletes the device mapping, which is what makes this irreversible: the
+   * device id is the only credential, so once the mapping is gone the same
+   * install can never resolve to this account again and comes back as a new
+   * guest. Deleting the row but keeping the mapping would silently resurrect
+   * the account on the next sign-in, which is the opposite of what the player
+   * asked for.
+   *
+   * Their avatars and stored photos are removed by the caller, which owns that
+   * storage. Returns false when the account is already gone, so a repeated
+   * request is not reported as a failure.
+   */
+  async deleteAccount(userId: string): Promise<boolean> {
+    let removed = false;
+
+    for (const [deviceId, user] of this.byDevice) {
+      if (user.sub === userId) {
+        this.byDevice.delete(deviceId);
+        removed = true;
+      }
+    }
+
+    if (removed) this.logger.log(`deleted account ${userId}`);
+    return removed;
+  }
+
   /** Verifies a token. Throws rather than returning null, so callers cannot ignore it. */
   async verify(token: string): Promise<TokenPayload> {
     try {

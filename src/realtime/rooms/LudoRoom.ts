@@ -51,6 +51,17 @@ export interface LudoRoomOptions {
   entryFee?: number;
   maxPlayers?: number;
   fillWithBots?: boolean;
+  /**
+   * Whether a lone ready player is started against CPUs after
+   * LOBBY_FILL_SECONDS.
+   *
+   * True for quick match, where the player asked for a game and not for a
+   * wait. False for a private room, where the entire point is the friend who
+   * has been sent a code and is still finding their phone — auto-starting
+   * after fifteen seconds would make every invite useless. A private host
+   * starts the match themselves with `start`.
+   */
+  autoStart?: boolean;
 }
 
 /**
@@ -78,6 +89,8 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
   private seatOf = new Map<string, number>();
   /** Whether empty seats are filled with CPUs when the match starts. */
   private fillWithBots = true;
+  /** See LudoRoomOptions.autoStart. */
+  private autoStart = true;
   private turnTimer?: NodeJS.Timeout;
   private lobbyTimer?: NodeJS.Timeout;
   private botTimer?: NodeJS.Timeout;
@@ -111,6 +124,7 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
     this.state.entryFee = options.entryFee ?? 0;
     this.maxClients = options.maxPlayers ?? 4;
     this.fillWithBots = options.fillWithBots ?? true;
+    this.autoStart = options.autoStart ?? true;
 
     // Matchmaking reads metadata, not room state, so the two fields players are
     // matched on are published here as well as mirrored into state for the UI.
@@ -122,6 +136,7 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
       this.handleMove(client, message?.tokenId),
     );
     this.onMessage('ready', (client) => this.handleReady(client));
+    this.onMessage('start', (client) => this.handleStart(client));
     this.onMessage('emote', (client, message: { id?: string }) => {
       const seat = this.seatOf.get(client.sessionId);
       if (seat === undefined || !message?.id) return;
@@ -156,6 +171,10 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
     player.name = auth.name;
     player.seat = seat;
     player.connected = true;
+    // The first player in opens the room, so they host it. If they leave the
+    // lobby, removePlayer hands it to whoever is left rather than stranding a
+    // private room with no one able to start it.
+    player.isHost = this.state.players.size === 0;
     this.state.players.set(client.sessionId, player);
     this.seatOf.set(client.sessionId, seat);
 
@@ -182,6 +201,13 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
     const player = this.state.players.get(client.sessionId);
     if (!player) return;
 
+    // Nothing has started, so there is no seat worth holding. Free it: anyone
+    // waiting gets the slot, and a ghost cannot hold up the start.
+    if (this.state.phase === 'lobby') {
+      this.removePlayer(client.sessionId);
+      return;
+    }
+
     player.connected = false;
     this.broadcast('system', { type: 'dropped', seat: player.seat, name: player.name });
     // Someone else's turn must still be able to proceed while they are gone.
@@ -207,10 +233,50 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
     const player = this.state.players.get(client.sessionId);
     if (!player || player.bot) return;
 
+    // In the lobby the seat is freed rather than botted. A bot seat counts
+    // toward readiness and will never become ready, which used to deadlock the
+    // room: everyone else sat watching "waiting for players" forever.
+    if (this.state.phase === 'lobby') {
+      this.removePlayer(client.sessionId);
+      return;
+    }
+
     player.connected = false;
     player.bot = true;
     this.broadcast('system', { type: 'left', seat: player.seat, name: player.name });
     this.advanceIfBotTurn();
+  }
+
+  /**
+   * Takes a player out of the lobby entirely, freeing their seat.
+   *
+   * Only ever used before a match starts. Once tokens are on the board a seat
+   * cannot be vacated — the game needs someone to play it, which is what the
+   * bot takeover is for.
+   */
+  private removePlayer(sessionId: string) {
+    const player = this.state.players.get(sessionId);
+    if (!player) return;
+
+    const wasHost = player.isHost;
+
+    this.state.players.delete(sessionId);
+    this.seatOf.delete(sessionId);
+    this.state.pot = this.humanCount() * this.state.entryFee;
+    this.broadcast('system', { type: 'left', seat: player.seat, name: player.name });
+
+    // A private room whose host walked out would otherwise have nobody able to
+    // start it, leaving everyone else stuck looking at a code.
+    if (wasHost) {
+      const heir = this.humans().sort((a, b) => a.seat - b.seat)[0];
+      if (heir) {
+        heir.isHost = true;
+        this.broadcast('system', { type: 'host', seat: heir.seat, name: heir.name });
+      }
+    }
+
+    // Someone who was waiting on this player may now be able to start.
+    this.startIfEveryoneReady();
   }
 
   onDispose() {
@@ -225,11 +291,26 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
     const player = this.state.players.get(client.sessionId);
     if (!player || this.state.phase !== 'lobby') return;
     player.ready = true;
+    this.startIfEveryoneReady();
+  }
 
-    const players = [...this.state.players.values()];
-    if (!players.every((p) => p.ready)) return;
+  /**
+   * Starts the match when everyone who can say "ready" has said it.
+   *
+   * ── Who counts as a vote ────────────────────────────────────────────────
+   * Only connected humans. A bot never sends `ready`, and neither does a
+   * player who has dropped — so counting either one means the room waits for a
+   * message that will never arrive, and everyone else watches "waiting for
+   * players" until they give up and close the app.
+   */
+  private startIfEveryoneReady() {
+    if (this.state.phase !== 'lobby') return;
 
-    if (players.length >= 2) {
+    const humans = this.humans();
+    if (humans.length === 0) return;
+    if (!humans.every((p) => p.ready)) return;
+
+    if (humans.length >= 2) {
       this.startGame();
       return;
     }
@@ -239,15 +320,53 @@ export class LudoRoom extends Room<{ state: LudoState; metadata: LudoRoomMetadat
      * worst outcome: the player sits on a lobby screen with nothing to do and
      * no idea whether anything is happening. Hold the door open briefly for a
      * real opponent, then start against CPUs.
+     *
+     * A private room does not do this — see LudoRoomOptions.autoStart.
      */
-    if (this.fillWithBots && !this.lobbyTimer) {
-      this.lobbyTimer = setTimeout(() => {
-        this.lobbyTimer = undefined;
-        if (this.state.phase !== 'lobby') return;
-        if (![...this.state.players.values()].every((p) => p.ready)) return;
-        this.startGame();
-      }, LOBBY_FILL_SECONDS * 1000);
-    }
+    if (this.autoStart && this.fillWithBots) this.armFillTimer();
+  }
+
+  /**
+   * Arms the window after which a waiting lobby starts regardless.
+   *
+   * ── Why it starts regardless ────────────────────────────────────────────
+   * This timer once re-checked that everyone was ready before starting, and
+   * gave up silently when they were not. So a player who joined and then idled
+   * — reading the screen, taking a call — pinned a ready player in the lobby
+   * forever, with no timer left to rescue them. The window is a promise that
+   * the wait is bounded, so when it elapses the match begins with whoever is
+   * present. Nobody is harmed: an unready player is dropped onto a board they
+   * queued for, with the turn clock to keep things moving.
+   */
+  private armFillTimer() {
+    if (this.lobbyTimer) return;
+
+    this.lobbyTimer = setTimeout(() => {
+      this.lobbyTimer = undefined;
+      if (this.state.phase !== 'lobby') return;
+      if (this.humans().length === 0) return;
+      this.startGame();
+    }, LOBBY_FILL_SECONDS * 1000);
+  }
+
+  /**
+   * `start` — the host begins a private match without waiting out a window.
+   *
+   * Only the host, because in a four-seat room any guest could otherwise start
+   * the game the moment they arrived, before the people the code was sent to
+   * had a chance to join.
+   */
+  private handleStart(client: Client) {
+    const player = this.state.players.get(client.sessionId);
+    if (!player?.isHost || this.state.phase !== 'lobby') return;
+    if (this.humans().length === 0) return;
+
+    this.startGame();
+  }
+
+  /** Everyone who can still act on their own behalf. */
+  private humans() {
+    return [...this.state.players.values()].filter((p) => !p.bot && p.connected);
   }
 
   /**

@@ -55,6 +55,11 @@ export class PlayerState extends Schema {
   /** True when a CPU plays this seat — either filled or after a timeout. */
   bot = false;
   tokensHome = 0;
+  /**
+   * The player who opened the room. Only they may start a private match early,
+   * so every client needs to know which seat that is to show the control.
+   */
+  isHost = false;
 }
 
 defineTypes(PlayerState, {
@@ -65,6 +70,7 @@ defineTypes(PlayerState, {
   ready: 'boolean',
   bot: 'boolean',
   tokensHome: 'number',
+  isHost: 'boolean',
 });
 
 export class LudoState extends Schema {

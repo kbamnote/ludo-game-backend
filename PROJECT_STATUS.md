@@ -332,3 +332,114 @@ Against the compiled build (`dist/src/main.js`, as production runs it):
 - **Wagering** — the pot is displayed and counted; no balance is debited.
 - **Server lint** — `npm run lint` has no eslint config in this repo and has
   never run. Pre-existing.
+
+### Lobby deadlock — a bot seat counted as a vote it could never cast
+
+Caught by playing a second match against a running server, not by the first
+end-to-end run, which only ever used a clean room.
+
+`handleReady` started the match when **every** player in state was ready. But a
+player who drops is kept in state and, once their reconnection window lapses,
+marked `bot = true`. A bot never sends `ready`. So any room that had ever held a
+dropped player could never start again: everyone else sat on "waiting for
+players" indefinitely, with nothing in any log to say why.
+
+Two changes, because the single root cause has two faces:
+
+- **Readiness counts only connected, non-bot players** (`startIfEveryoneReady`).
+  A seat that cannot answer must not be waited on.
+- **A player who drops or leaves during the lobby is removed outright**, freeing
+  the seat, rather than being held for 60 seconds or botted. There is no game in
+  progress to need that seat played, and holding it delays everyone. The
+  reconnection hold and the bot takeover now apply only once a match is
+  actually running.
+
+Verified against the live dev server over LAN: solo join → ready → 15s fill
+window → three CPUs seated → full 16-token board → turn clock → CPUs take their
+own turns → turn returns to the human with a fresh clock.
+
+### Note: `defineTypes()` is deprecated
+
+`@colyseus/schema` 5 logs a deprecation for `defineTypes()` at boot and points
+to `schema()` with `t.*` field builders. It still works and state syncs
+correctly; the warning is cosmetic today.
+
+Not migrated yet, deliberately: `schema()` returns a constructor rather than a
+class to extend, so `TokenState`/`PlayerState` stop being classes and the change
+ripples through `LudoRoom.ts`'s imports, instantiation and type annotations. It
+is worth doing before the next major bump of that package, as its own change
+with the end-to-end check run afterwards — not folded into a phase while
+multiplayer is being tested.
+
+`@type` decorators remain unusable here regardless; see §10 for why.
+
+### Invites — private rooms by code
+
+Quick match pairs players only by stake tier and only if they queue inside the
+same fill window, so there was no way to arrange a game with a specific person.
+This closes that.
+
+| Change | Why |
+|---|---|
+| `LudoRoomOptions.autoStart` | A private room must NOT start against CPUs after 15 seconds — the friend holding the code is still finding their phone. Quick match keeps the window; private rooms wait. |
+| `PlayerState.isHost` | Set on the first player in. Only the host may `start` a private match early; any guest could otherwise start it the moment they arrived, before the invited players had joined. |
+| `start` message | The host's escape hatch, since a private room never auto-starts. Server-enforced, not just hidden in the UI. |
+| Host succession in `removePlayer` | A private room whose host walked out had nobody able to start it. The lowest remaining seat inherits. |
+
+### The fill timer used to give up
+
+`armFillTimer` once re-checked that everyone was ready when it fired and
+returned silently if they were not — leaving no timer behind. So a player who
+joined and then idled pinned a ready player in the lobby indefinitely.
+
+The window is a promise that the wait is bounded, so it now starts the match
+with whoever is present. An unready player is dropped onto a board they queued
+for, with the turn clock running, which is strictly better than everyone
+waiting on someone who may never tap anything.
+
+### Verified against the live dev server
+
+Invite flow, 15/15: code minted from the no-vowel alphabet; the creator is
+host; a wrong code is **refused rather than silently opening a new empty room**
+(`join`, never `joinOrCreate`); a private room still in lobby after 17s with the
+host ready alone; guest joins by code into the same roomId; pot counts both
+humans; two ready humans start immediately; both keep their seats and CPUs take
+the rest; the idle player cannot roll.
+
+Quick match re-checked afterwards, 14/14 — the timer refactor did not change
+its behaviour.
+
+### Play Store prerequisites (server side)
+
+| Added | Route |
+|---|---|
+| Privacy policy | `GET /privacy` |
+| Account deletion info | `GET /account-deletion` |
+| Account deletion | `DELETE /v1/auth/me` (auth) |
+
+**The legal pages are served by this server** rather than hosted separately, so
+they exist the moment it is deployed — no second host, no domain, and no risk
+of the policy describing behaviour the code no longer has, since they are
+versioned together. The policy is written from what the avatars service
+actually does: the source photo is deleted as soon as generation finishes,
+consent is recorded with a timestamp and policy version, media is served only
+behind a signed expiring URL, and there are no advertising or analytics SDKs.
+
+**Deletion order matters.** `deleteMe` removes avatars and stored photos first,
+then the identity. Reversed, a failure midway would strand images belonging to
+a user id nothing could resolve any more — undeletable, because the only handle
+on them had just been thrown away.
+
+`AuthService.deleteAccount` deletes the **device mapping**, not just the user.
+The device id is the only credential, so leaving the mapping would silently
+resurrect the account on the next sign-in.
+
+Verified, 6/6: `DELETE /v1/auth/me` returns 204; the same device id afterwards
+yields a **different** user id; deleting twice is not an error; deletion without
+a token is 401. Both pages return 200 as HTML, and `example.com` appears
+nowhere.
+
+Still outstanding before external testers: push and redeploy to Railway, set
+`LUDO_JWT_SECRET` and `LUDO_SIGNING_KEY`, pin to one replica, and set
+`LUDO_CONTACT_EMAIL` (the policy falls back to privacy@ludoafterdark.app, which
+must be a mailbox that is actually read).

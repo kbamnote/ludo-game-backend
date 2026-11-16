@@ -167,3 +167,80 @@ Served by the server so styles can be added or retired without an app release.
 4. Delivery URLs are **short-lived and signed**; no public bucket.
 5. **No provider key, URL or model name** is ever sent to the client.
 6. Deletion is **hard** and covers database, storage and caches.
+
+---
+
+## Authentication (Phase 5)
+
+Replaces the Phase 3 `x-user-id` header, which was refused when
+`NODE_ENV=production` — the reason the deployed avatar routes answered 401.
+Every route below marked as authenticated expects `Authorization: Bearer <jwt>`.
+
+### Guest sign-in
+
+```
+POST /v1/auth/guest                (no auth)
+```
+
+```json
+{ "deviceId": "d_...", "name": "Nova" }
+```
+
+Both fields are optional.
+
+- **`deviceId` omitted** — a first run. The server generates one and returns
+  it. The client stores it and sends it on every later sign-in.
+- **`deviceId` supplied** — a returning install, resolved to the same account.
+- A supplied id shorter than 8 characters is rejected (400).
+
+```json
+{
+  "accessToken": "<jwt, 30 days>",
+  "user": { "id": "u_...", "name": "Nova", "guest": true },
+  "deviceId": "d_..."
+}
+```
+
+`deviceId` is always echoed, so the client has one code path: store whatever
+comes back.
+
+**The server mints the device id deliberately.** It is the credential that
+re-identifies a returning install, so it must be unguessable — a client-minted
+id is only as strong as the client's randomness. It also means the app needs no
+native crypto module, which otherwise breaks Expo Go and any dev client built
+before that module was added.
+
+It remains a bearer credential, not proof of a person: whoever presents it is
+treated as that account. Acceptable for guests, and the reason real sign-in
+(OAuth, phone OTP) is still to come.
+
+### Who am I
+
+```
+GET /v1/auth/me                    (auth)
+```
+
+```json
+{ "id": "u_...", "name": "Nova", "guest": true }
+```
+
+### Matchmaking
+
+```
+POST /matchmake/joinOrCreate/:room (auth, via Authorization header)
+POST /matchmake/join/:room         (auth)
+POST /matchmake/joinById/:roomId   (auth)
+POST /matchmake/reconnect/:room    (auth)
+```
+
+Served by Nest, not by Colyseus's own listener, because Colyseus shares this
+server's single HTTP port. Returns a Colyseus seat reservation
+(`{ room, sessionId, roomId, processId }`) on success. Failures carry a Colyseus
+`ErrorCode` in both the status and the body: `523` is `AUTH_FAILED`.
+
+```
+GET  /v1/matches/quick             (auth)   -> { room, entryFee }
+POST /v1/matches/private           (auth)   -> { room, roomCode, entryFee, maxPlayers, host }
+```
+
+Room codes are minted server-side so two devices cannot produce the same code.

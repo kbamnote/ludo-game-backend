@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtGuard } from './jwt.guard';
+import { AvatarsModule } from '../avatars/avatars.module';
 
 /**
  * Global so the Colyseus transport can verify socket tokens with the same
@@ -12,6 +13,9 @@ import { JwtGuard } from './jwt.guard';
 @Global()
 @Module({
   imports: [
+    // For account deletion: removing the identity must also remove the
+    // avatars and photos attached to it, or they are orphaned beyond reach.
+    AvatarsModule,
     JwtModule.register({
       secret: process.env.LUDO_JWT_SECRET ?? 'dev-only-insecure-jwt-secret',
       signOptions: { expiresIn: '30d' },
